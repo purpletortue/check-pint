@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#check-pint.py v1.0
+#check-pint.py v1.1.
 
 from pathlib import Path
 import argparse, copy, csv, hashlib, os, sys, subprocess
@@ -23,6 +23,7 @@ NC = '\033[0m' # No Color
 
 pint_input = {}
 pint_output = {}
+mode = str()
 
 #Process command-line arguments/options into variables
 #Returns an argparse class namespace object
@@ -47,8 +48,11 @@ def argparser():
 #Validate arguments/options,
 #Exits on errors
 def validate_args(args):
+    global mode
     #confirm given path is a file or directory
-    if not True in (os.path.isdir(args.path), os.path.isfile(args.path)):
+    if os.path.isdir(args.path): mode = 'directory'
+    elif os.path.isfile(args.path): mode = 'file'
+    else:
         print("Path, ("+ args.path + "), needs to be an existing file or directory", file=sys.stderr)
         sys.exit(1)
     #Error if a directory is not given with new-only flag
@@ -73,24 +77,38 @@ def get_pint_path(given_path):
 
     return pint_path
 
-#Given the pint filepath,
-#read in and return dictionary of the data
+#Given a path,
+#read in and return dictionary of the pint data
 #csv file format (filename,filehash,pixelhash)
 #pint_data={'filename1': {'filehash': '817751a876d97g6fe', 'pixelhash': '98861fadge9789ab9cd'}, ...}
-def import_pint(file):
+def import_pint(given_path, verbose):
     #TODO account for blank lines
+    pint_path = None
+    full_path = Path(given_path).resolve()
+    if full_path.is_dir():
+        pint_path = full_path/PINT_FILENAME
+    elif full_path.is_file():
+        folder = full_path.parent
+        pint_path = folder/PINT_FILENAME
+    file = pint_path
+
     pint_data = {}
-    with open(file, newline='') as csvfile:
-        pint_reader = csv.reader(csvfile, delimiter=',')
-        next(pint_reader)
-        for row in pint_reader:
-            col1, col2, col3 = row
-            pint_data[col1] = {'filehash': col2, 'pixelhash': col3}
-            filehash = {col1: col2}
-            pixelhash = {col1: col3}
-    #for k,v in pint_data.items():
-    #    print(k, v)
-    return pint_data
+    if Path(file).is_file():
+        with open(file, newline='') as csvfile:
+            pint_reader = csv.reader(csvfile, delimiter=',')
+            next(pint_reader)
+            for row in pint_reader:
+                col1, col2, col3 = row
+                pint_data[col1] = {'filehash': col2, 'pixelhash': col3}
+                filehash = {col1: col2}
+                pixelhash = {col1: col3}
+        #for k,v in pint_data.items():
+        #    print(k, v)
+            if verbose: print(pint_data)
+        return pint_data
+    else:
+        print(f"No pint file found at {file}")
+        return pint_data
 
 #Given the pint filepath,
 #write the file (with data from the global output dictionary) and return status
@@ -113,7 +131,6 @@ def calculate_file_hash(directory, file, block_size=1024*128):
     '''
     Block size directly depends on the block size of your filesystem
     to avoid performances issues
-    Here I have blocks of 4096 octets (Default NTFS)
     '''
     path = directory + '/' + file
     h = hashlib.md5(usedforsecurity=False)
@@ -296,28 +313,81 @@ def prep_file_output_data(working_dict, missing_dict=None):
 #         subfolders.extend(fast_scandir(dirname))
 #     return subfolders
 
+def check_single_image(directory, filename, verbose, update):
+    global pint_input
+    global pint_output
+    #calculate filehash
+    #directory = str(Path(args.path)).rsplit('/', 1)[0]
+    #filename = Path(args.path).name
+    filehash = calculate_file_hash(directory, filename)
+    live_dict = {filename: None}
+
+    add_file_hashes(directory, live_dict, verbose)
+    flag_filehash_changes(live_dict)
+
+    #calculate and add pixelhashes to changed files
+    changed_files_list = []
+    for key in live_dict:
+        if live_dict[key]['flag'] == 'CHANGED':
+            changed_files_list.append(key)
+    add_pixel_hashes(directory, live_dict, changed_files_list)
+
+    #calculate and add pixelhashes to new files
+    new_files_list = []
+    for key in live_dict:
+        if live_dict[key]['flag'] == 'NEW':
+            new_files_list.append(key)
+    add_pixel_hashes(directory, live_dict, new_files_list)
+
+    #determine whether metadata or pixeldata changed
+    #and flag accordingly
+    flag_pixel_meta_changes(live_dict)
+
+    for key in sorted(live_dict):
+        if live_dict[key]['flag'] == 'IDENTICAL':
+            print(f"{key} IDENTICAL")
+        elif live_dict[key]['flag'] == 'CHANGED (METADATA)':
+            print(f"{key} {YELLOW}CHANGED (METADATA){NC}")
+        elif live_dict[key]['flag'] == 'CHANGED (PIXELDATA)':
+            print(f"{key} {RED}CHANGED (PIXELDATA){NC}")
+        elif live_dict[key]['flag'] == 'NEW':
+            print(f"{key} {GREEN}NEW{NC}")
+        elif live_dict[key]['flag'] == 'MISSING':
+            print(f"{key} {YELLOW}MISSING{NC}")
+
+    if update:
+        prep_file_output_data(live_dict)
+        update_pint_file(directory)
+
 def main():
     global pint_input
     global pint_output
+    global mode
     args = argparser()
     validate_args(args)
 
-    '''Get the pint file path and read the pint data into a dictionary'''
-    pint_path = get_pint_path(args.path)
-    if Path(pint_path).is_file():
-        pint_input = import_pint(pint_path)
+    #Given a file on the command-line...
+    if mode == 'file':
+        pint_input = import_pint(args.path, args.verbose)
         if args.update or args.new:
             pint_output = copy.deepcopy(pint_input)
-        if args.verbose:
-            print(pint_path)
-            print(pint_input)
-    # else:
-    #     print("Pint file, (", pint_path , ") does not exist", file=sys.stderr)
+        directory = str(Path(args.path)).rsplit('/', 1)[0]
+        filename = Path(args.path).name
+        check_single_image(directory, filename, args.verbose, args.update)
+
+    #Given a directory on the command-line...
+    elif mode == 'directory':
+        current_dir = args.path
+        pint_input = import_pint(args.path, args.verbose)
+        if args.update or args.new:
+            pint_output = copy.deepcopy(pint_input)
 
     #If -n option was given
     #only add new images to pint file then exit
     #(useful for daily cronjob to pick up newly downloaded images)
     if args.new:
+        pint_input = import_pint(args.path, args.verbose)
+        pint_output = copy.deepcopy(pint_input)
         directory = str(Path(args.path))
         live_dict = get_image_dict(directory)
         new_files_dict = create_new_files_dict(live_dict)
@@ -330,51 +400,6 @@ def main():
             sys.exit(0)
         else:
             sys.exit(0)
-
-    #Given a file on the command-line...
-    if Path(args.path).is_file():
-        #calculate filehash
-        directory = str(Path(args.path)).rsplit('/', 1)[0]
-        filename = Path(args.path).name
-        filehash = calculate_file_hash(directory, filename)
-        live_dict = {filename: None}
-
-        add_file_hashes(directory, live_dict, args.verbose)
-        flag_filehash_changes(live_dict)
-
-        #calculate and add pixelhashes to changed files
-        changed_files_list = []
-        for key in live_dict:
-            if live_dict[key]['flag'] == 'CHANGED':
-                changed_files_list.append(key)
-        add_pixel_hashes(directory, live_dict, changed_files_list)
-
-        #calculate and add pixelhashes to new files
-        new_files_list = []
-        for key in live_dict:
-            if live_dict[key]['flag'] == 'NEW':
-                new_files_list.append(key)
-        add_pixel_hashes(directory, live_dict, new_files_list)
-
-        #determine whether metadata or pixeldata changed
-        #and flag accordingly
-        flag_pixel_meta_changes(live_dict)
-
-        for key in sorted(live_dict):
-            if live_dict[key]['flag'] == 'IDENTICAL':
-                print(f"{key} IDENTICAL")
-            elif live_dict[key]['flag'] == 'CHANGED (METADATA)':
-                print(f"{key} {YELLOW}CHANGED (METADATA){NC}")
-            elif live_dict[key]['flag'] == 'CHANGED (PIXELDATA)':
-                print(f"{key} {RED}CHANGED (PIXELDATA){NC}")
-            elif live_dict[key]['flag'] == 'NEW':
-                print(f"{key} {GREEN}NEW{NC}")
-            elif live_dict[key]['flag'] == 'MISSING':
-                print(f"{key} {YELLOW}MISSING{NC}")
-
-        if args.update:
-            prep_file_output_data(live_dict)
-            update_pint_file(directory)
 
     #Given a directory on the command-line...
     if Path(args.path).is_dir():
