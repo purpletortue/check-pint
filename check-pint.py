@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#check-pint.py v1.1.
+#check-pint.py v2.0.
 
 from pathlib import Path
 import argparse, copy, csv, hashlib, os, sys, subprocess
@@ -31,7 +31,7 @@ def argparser():
     parser = argparse.ArgumentParser(description='Compare file/dir(s) against previous integrity checks.')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False,
                         help='verbose output')
-    parser.add_argument('path', type=str,
+    parser.add_argument('path', type=lambda p: Path(p).resolve(),
                         help='path to the file or folder')
     parser.add_argument('-u', '--update', dest='update', action='store_true', default=False,
                         help='update the pint file with all calculated/changed hashes')
@@ -50,18 +50,18 @@ def argparser():
 def validate_args(args):
     global mode
     #confirm given path is a file or directory
-    if os.path.isdir(args.path): mode = 'directory'
-    elif os.path.isfile(args.path): mode = 'file'
+    if Path.is_dir(args.path): mode = 'directory'
+    elif Path.is_file(args.path): mode = 'file'
     else:
-        print("Path, ("+ args.path + "), needs to be an existing file or directory", file=sys.stderr)
+        print(f"Path, {args.path}, needs to be an existing file or directory", file=sys.stderr)
         sys.exit(1)
     #Error if a directory is not given with new-only flag
-    if args.new and not os.path.isdir(args.path):
-        print("Path, ("+ args.path + "), must be a directory when using --new-only (-n)")
+    if args.new and not args.path.is_dir:
+        print(f"Path, {args.path}, must be a directory when using --new-only (-n)")
         sys.exit(2)
     #Error if a directory is not given with recursive flag
-    if args.recursive and not os.path.isdir(args.path):
-        print("Path, ("+ args.path + "), must be a directory when using --recursive (-r)")
+    if args.recursive and not args.path.is_dir:
+        print(f"Path, {args.path}, must be a directory when using --recursive (-r)")
         sys.exit(3)
 
 #Given a path (of either a file or directory)
@@ -81,7 +81,7 @@ def get_pint_path(given_path):
 #read in and return dictionary of the pint data
 #csv file format (filename,filehash,pixelhash)
 #pint_data={'filename1': {'filehash': '817751a876d97g6fe', 'pixelhash': '98861fadge9789ab9cd'}, ...}
-def import_pint(given_path, verbose):
+def import_pint(given_path, verbose, recursive):
     #TODO account for blank lines
     pint_path = None
     full_path = Path(given_path).resolve()
@@ -107,7 +107,7 @@ def import_pint(given_path, verbose):
             if verbose: print(pint_data)
         return pint_data
     else:
-        print(f"No pint file found at {file}")
+        if verbose: print(f"No pint file found at {file}")
         return pint_data
 
 #Given the pint filepath,
@@ -359,6 +359,9 @@ def check_single_image(directory, filename, verbose, update):
         prep_file_output_data(live_dict)
         update_pint_file(directory)
 
+def check_directory(path, verbose, update):
+    sys.exit(12)
+
 def main():
     global pint_input
     global pint_output
@@ -366,95 +369,104 @@ def main():
     args = argparser()
     validate_args(args)
 
-    #Given a file on the command-line...
-    if mode == 'file':
-        pint_input = import_pint(args.path, args.verbose)
-        if args.update or args.new:
-            pint_output = copy.deepcopy(pint_input)
-        directory = str(Path(args.path)).rsplit('/', 1)[0]
-        filename = Path(args.path).name
-        check_single_image(directory, filename, args.verbose, args.update)
-
-    #Given a directory on the command-line...
-    elif mode == 'directory':
-        current_dir = args.path
-        pint_input = import_pint(args.path, args.verbose)
-        if args.update or args.new:
-            pint_output = copy.deepcopy(pint_input)
-
     #If -n option was given
     #only add new images to pint file then exit
     #(useful for daily cronjob to pick up newly downloaded images)
     if args.new:
-        pint_input = import_pint(args.path, args.verbose)
-        pint_output = copy.deepcopy(pint_input)
-        directory = str(Path(args.path))
-        live_dict = get_image_dict(directory)
-        new_files_dict = create_new_files_dict(live_dict)
-        if new_files_dict:
-            add_file_hashes(directory, new_files_dict, args.verbose)
-            add_pixel_hashes(directory, new_files_dict)
-            pint_output |= new_files_dict
-            update_pint_file(directory)
-            print("New files found, added to pint file")
-            sys.exit(0)
+        if args.recursive:
+            d = sorted(args.path.glob('**/'))
         else:
-            sys.exit(0)
+            d = [args.path]
+        for subdir in d:
+            #print(pint_input)
+            pint_input = import_pint(subdir, args.verbose, args.recursive)
+            #print(pint_input)
+            pint_output = copy.deepcopy(pint_input)
+            directory = str(subdir)
+            live_dict = get_image_dict(directory)
+            new_files_dict = create_new_files_dict(live_dict)
+            if new_files_dict:
+                add_file_hashes(directory, new_files_dict, args.verbose)
+                add_pixel_hashes(directory, new_files_dict)
+                pint_output |= new_files_dict
+                update_pint_file(directory)
+                print(f"New files found in {directory}, added to pint file")
+            #     sys.exit(0)
+            # else:
+            #     sys.exit(0)
+        sys.exit(0)
+    #Given a file on the command-line...
+    if mode == 'file':
+        pint_input = import_pint(args.path, args.verbose, args.recursive)
+        if args.update:
+            pint_output = copy.deepcopy(pint_input)
+        #directory = str(args.path).rsplit('/', 1)[0]
+        directory = str(args.path.parent)
+        #print(directory)
+        filename = args.path.name
+        check_single_image(directory, filename, args.verbose, args.update)
 
     #Given a directory on the command-line...
-    if Path(args.path).is_dir():
-        directory = str(Path(args.path))
-        #print(directory)
-
-        live_dict = get_image_dict(directory)
-        missing_files_dict = create_missing_files_dict(live_dict)
-        #new_files_dict = create_new_files_dict(live_dict)
-
-        #If files exist in dir
-        if live_dict:
-            add_file_hashes(directory, live_dict, args.verbose)
-            flag_filehash_changes(live_dict)
-
-            #calculate and add pixelhashes to changed files
-            changed_files_list = []
-            for key in live_dict:
-                if live_dict[key]['flag'] == 'CHANGED':
-                    changed_files_list.append(key)
-            add_pixel_hashes(directory, live_dict, changed_files_list)
-
-            #calculate and add pixelhashes to new files
-            new_files_list = []
-            for key in live_dict:
-                if live_dict[key]['flag'] == 'NEW':
-                    new_files_list.append(key)
-            add_pixel_hashes(directory, live_dict, new_files_list)
-
-            #determine whether metadata or pixeldata changed
-            #and flag accordingly
-            flag_pixel_meta_changes(live_dict)
-
-            #combine the live filesystem and missing_files dicts for print output
-            combined_dict = {}
-            combined_dict = live_dict | missing_files_dict
-
-            for key in sorted(combined_dict):
-                if combined_dict[key]['flag'] == 'IDENTICAL':
-                    print(f"{key} IDENTICAL")
-                elif combined_dict[key]['flag'] == 'CHANGED (METADATA)':
-                    print(f"{key} {YELLOW}CHANGED (METADATA){NC}")
-                elif combined_dict[key]['flag'] == 'CHANGED (PIXELDATA)':
-                    print(f"{key} {RED}CHANGED (PIXELDATA){NC}")
-                elif combined_dict[key]['flag'] == 'NEW':
-                    print(f"{key} {GREEN}NEW{NC}")
-                elif combined_dict[key]['flag'] == 'MISSING':
-                    print(f"{key} {YELLOW}MISSING{NC}")
-
+    elif mode == 'directory':
+        if args.recursive:
+            d = sorted(args.path.glob('**/'))
+        else:
+            d = [args.path]
+        for cwd in d:
+            #print(subdir)
+            pint_input = import_pint(cwd, args.verbose, args.recursive)
             if args.update:
-                #remove missing files from new output file
-                prep_file_output_data(live_dict, missing_files_dict)
-                update_pint_file(directory)
-                # for key in sorted(pint_output):
-                #     print(f"{key} {pint_output[key]['filehash']} {pint_output[key]['pixelhash']}")
+                pint_output = copy.deepcopy(pint_input)
+
+            directory = str(cwd)
+            live_dict = get_image_dict(directory)
+            missing_files_dict = create_missing_files_dict(live_dict)
+
+            if live_dict:
+                add_file_hashes(directory, live_dict, args.verbose)
+                flag_filehash_changes(live_dict)
+
+                #calculate and add pixelhashes to changed files
+                changed_files_list = []
+                for key in live_dict:
+                    if live_dict[key]['flag'] == 'CHANGED':
+                        changed_files_list.append(key)
+                add_pixel_hashes(directory, live_dict, changed_files_list)
+
+                #calculate and add pixelhashes to new files
+                new_files_list = []
+                for key in live_dict:
+                    if live_dict[key]['flag'] == 'NEW':
+                        new_files_list.append(key)
+                add_pixel_hashes(directory, live_dict, new_files_list)
+
+                #determine whether metadata or pixeldata changed
+                #and flag accordingly
+                flag_pixel_meta_changes(live_dict)
+
+                #combine the live filesystem and missing_files dicts for print output
+                combined_dict = {}
+                combined_dict = live_dict | missing_files_dict
+
+                for key in sorted(combined_dict):
+                    if combined_dict[key]['flag'] == 'IDENTICAL':
+                        print(f"{key} IDENTICAL")
+                    elif combined_dict[key]['flag'] == 'CHANGED (METADATA)':
+                        print(f"{key} {YELLOW}CHANGED (METADATA){NC}")
+                    elif combined_dict[key]['flag'] == 'CHANGED (PIXELDATA)':
+                        print(f"{key} {RED}CHANGED (PIXELDATA){NC}")
+                    elif combined_dict[key]['flag'] == 'NEW':
+                        print(f"{key} {GREEN}NEW{NC}")
+                    elif combined_dict[key]['flag'] == 'MISSING':
+                        print(f"{key} {YELLOW}MISSING{NC}")
+
+                if args.update:
+                    #remove missing files from new output file
+                    prep_file_output_data(live_dict, missing_files_dict)
+                    update_pint_file(directory)
+                    # for key in sorted(pint_output):
+                    #     print(f"{key} {pint_output[key]['filehash']} {pint_output[key]['pixelhash']}")
+
 
 if __name__ == '__main__':
     main()
