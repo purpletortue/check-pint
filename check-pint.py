@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#check-pint.py v2.0.
+#check-pint.py v2.1.
 
 from pathlib import Path
 import argparse, copy, csv, hashlib, os, sys, subprocess
@@ -377,12 +377,14 @@ def main():
             d = sorted(args.path.glob('**/'))
         else:
             d = [args.path]
-        for subdir in d:
+        for cwd in d:
+            #skip digiKam trash folder
+            if cwd.name == '.dtrash': continue
             #print(pint_input)
-            pint_input = import_pint(subdir, args.verbose, args.recursive)
+            pint_input = import_pint(cwd, args.verbose, args.recursive)
             #print(pint_input)
             pint_output = copy.deepcopy(pint_input)
-            directory = str(subdir)
+            directory = str(cwd)
             live_dict = get_image_dict(directory)
             new_files_dict = create_new_files_dict(live_dict)
             if new_files_dict:
@@ -413,6 +415,8 @@ def main():
         else:
             d = [args.path]
         for cwd in d:
+            #skip digiKam trash folder
+            if cwd.name == '.dtrash': continue
             #print(subdir)
             pint_input = import_pint(cwd, args.verbose, args.recursive)
             if args.update:
