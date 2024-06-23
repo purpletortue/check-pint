@@ -141,7 +141,7 @@ def calculate_file_hash(directory, file, block_size=1024*128):
     except IOError as e:
         print("I/O error({0}): {1}".format(e.errno, e.strerror), file=sys.stderr)
         raise
-
+    #print(h.hexdigest())
     return h.hexdigest()
 
 #Given a directory and filename, return pixelhash
@@ -152,7 +152,7 @@ def calculate_pixel_hash(directory, file):
 
     h.update(Image.open(path).tobytes())
     #Image.Image.close(path)
-    #print(cmd_result.hexdigest())
+    print(h.hexdigest())
     return h.hexdigest()
     #return cmd_result.stdout
 
